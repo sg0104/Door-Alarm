@@ -1,71 +1,109 @@
+
 from gpiozero import DistanceSensor, Button, Buzzer
 from time import sleep
 from statistics import median
+from datetime import datetime
 
-# Set up components
+# Component setup
 ultrasonic = DistanceSensor(
     echo=18,
     trigger=17,
     max_distance=2
 )
 
-tilt = Button(27, pull_up=True)
+button = Button(27, pull_up=True, bounce_time=0.1)
 buzzer = Buzzer(22)
 
 # Alarm settings
-TOLERANCE = 5       # Distance change in cm
-REQUIRED_READINGS = 3
+TOLERANCE = 5
+CHECK_INTERVAL = 0.1
 
-print("Close the doors before calibration.")
-input("Press Enter when ready...")
+armed = False
+closed_distance = None
+door_open = False
 
-# Measure the closed-door distance
-readings = []
+# Record events
+def log_event(message):
+    time = datetime.now().strftime("%H:%M:%S")
+    entry = f"[{time}] {message}"
+    print("\n" + entry)
 
-for i in range(10):
-    readings.append(ultrasonic.distance * 100)
-    sleep(0.2)
+    with open("alarm_log.txt", "a") as file:
+        file.write(entry + "\n")
 
-closed_distance = median(readings)
+# Read ultrasonic distance
+def get_distance():
+    return ultrasonic.distance * 100
 
-print(f"Calibrated distance: {closed_distance:.1f} cm")
-print("Alarm armed!")
+# Calibrate closed-door position
+def calibrate():
+    print("\nCalibrating sensor...")
+    print("Keep both doors closed.")
 
-change_count = 0
+    readings = []
+
+    for i in range(10):
+        readings.append(get_distance())
+        sleep(0.1)
+
+    baseline = median(readings)
+
+    print(f"Closed distance: {baseline:.1f} cm")
+    return baseline
+
+# Button controls alarm power state
+def toggle_alarm():
+    global armed, closed_distance, door_open
+
+    if armed:
+        armed = False
+        buzzer.off()
+        door_open = False
+        log_event("Alarm DISARMED")
+
+    else:
+        closed_distance = calibrate()
+        door_open = False
+        armed = True
+        log_event("Alarm ARMED")
+
+# Button event
+button.when_pressed = toggle_alarm
+
+print("UNIVERSAL DOOR ALARM")
+print("Press button to ARM or DISARM")
+print("System currently DISARMED")
 
 try:
     while True:
-        distance = ultrasonic.distance * 100
+        if armed and closed_distance is not None:
+            distance = get_distance()
 
-        # Detect target movement
-        distance_changed = (
-            abs(distance - closed_distance) > TOLERANCE
-        )
+            difference = abs(distance - closed_distance)
 
-        # Detect tilt switch activation
-        tilt_detected = tilt.is_pressed
+            if difference > TOLERANCE:
+                buzzer.on()
 
-        if distance_changed or tilt_detected:
-            change_count += 1
-        else:
-            change_count = 0
+                if not door_open:
+                    door_open = True
+                    log_event("DOOR OPEN - ALARM ON")
 
-        if change_count >= REQUIRED_READINGS:
-            buzzer.on()
-            print("ALARM! Door opened!")
+            else:
+                buzzer.off()
 
-        else:
-            buzzer.off()
-            print(f"Door closed | Distance: {distance:.1f} cm")
+                if door_open:
+                    door_open = False
+                    log_event("DOOR CLOSED - ALARM OFF")
 
-        sleep(0.2)
+        sleep(CHECK_INTERVAL)
 
 except KeyboardInterrupt:
-    print("Alarm stopped.")
+    print("\nProgram stopped")
 
 finally:
     buzzer.off()
+    button.close()
     ultrasonic.close()
-    tilt.close()
     buzzer.close()
+
 
