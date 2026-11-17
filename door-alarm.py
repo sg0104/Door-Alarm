@@ -14,7 +14,11 @@ ultrasonic = DistanceSensor(
 tilt = Button(23, pull_up=True)
 button = Button(27, pull_up=True, bounce_time=0.1)
 buzzer = Buzzer(22)
-vibrator = OutputDevice(25)
+
+# Vibration module is active-low (turns ON when the pin is LOW).
+# active_high=False makes .on()/.off() behave correctly,
+# and initial_value=False keeps it off at startup.
+vibrator = OutputDevice(25, active_high=False, initial_value=False)
 
 
 # Alarm settings
@@ -89,6 +93,10 @@ print("UNIVERSAL DOOR ALARM")
 print("Press the button to ARM or DISARM")
 print("System currently DISARMED")
 
+# Make sure outputs start off
+buzzer.off()
+vibrator.off()
+
 try:
     while True:
 
@@ -139,6 +147,7 @@ try:
         else:
             buzzer.off()
             vibrator.off()
+
         sleep(CHECK_INTERVAL)
 
 except KeyboardInterrupt:
@@ -146,7 +155,9 @@ except KeyboardInterrupt:
 
 finally:
     buzzer.off()
+    vibrator.off()
     ultrasonic.close()
     tilt.close()
     button.close()
     buzzer.close()
+    vibrator.close()
