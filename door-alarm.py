@@ -1,5 +1,5 @@
 from gpiozero import DistanceSensor, Button, Buzzer
-from time import sleep
+from time import sleep, monotonic
 from datetime import datetime
 from statistics import median
 
@@ -11,20 +11,25 @@ ultrasonic = DistanceSensor(
     max_distance=2
 )
 
-tilt = Button(23, pull_up=True)
-button = Button(27, pull_up=True, bounce_time=0.1)
+button = Button(27, pull_up=True, bounce_time=0.1)       # ARM / DISARM
+mode_button = Button(24, pull_up=True, bounce_time=0.1)  # change time mode
 buzzer = Buzzer(22)
+
 
 # Alarm settings
 
 TOLERANCE = 5
 CHECK_INTERVAL = 0.1
 
+TIME_MODES = [1, 5, 10, 15]   # hours the alarm stays armed
+mode_index = 0                # starts on 1 hour
+
 armed = False
 door_open = False
 closed_distance = None
-normal_tilt = None
+arm_end_time = None
 last_button_state = False
+last_mode_state = False
 
 # Record events
 
@@ -37,15 +42,24 @@ def log_event(message):
     with open("alarm_log.txt", "a") as file:
         file.write(entry + "\n")
 
+# Short beeps (so you can hear the mode without a screen)
+
+def beep(times):
+    for i in range(times):
+        buzzer.on()
+        sleep(0.15)
+        buzzer.off()
+        sleep(0.15)
+
 # Read ultrasonic sensor
 
 def get_distance():
     return ultrasonic.distance * 100
 
-# Calibrate both sensors
+# Calibrate sensor
 
 def calibrate():
-    print("\nCalibrating sensors...")
+    print("\nCalibrating sensor...")
     print("Keep the door closed and still.")
 
     readings = []
@@ -55,41 +69,62 @@ def calibrate():
         sleep(0.1)
 
     baseline_distance = median(readings)
-    baseline_tilt = tilt.is_pressed
 
     print(f"Closed distance: {baseline_distance:.1f} cm")
-    print(f"Normal tilt state: {baseline_tilt}")
 
-    return baseline_distance, baseline_tilt
+    return baseline_distance
+
+# Change time mode
+
+def next_mode():
+    global mode_index
+
+    if armed:
+        print("\nDisarm first to change the time mode")
+        return
+
+    mode_index = (mode_index + 1) % len(TIME_MODES)
+    hours = TIME_MODES[mode_index]
+    print(f"\nTime mode: {hours} hour(s)")
+    beep(mode_index + 1)   # 1 beep = 1h, 2 = 5h, 3 = 10h, 4 = 15h
 
 # Arm and disarm alarm
 
+def disarm(reason="Alarm DISARMED"):
+    global armed, door_open
+
+    armed = False
+    door_open = False
+    buzzer.off()
+    log_event(reason)
+
 def toggle_alarm():
     global armed, door_open
-    global closed_distance, normal_tilt
+    global closed_distance, arm_end_time
 
     if armed:
-        armed = False
-        door_open = False
-        buzzer.off()
-        log_event("Alarm DISARMED")
+        disarm()
 
     else:
-        closed_distance, normal_tilt = calibrate()
+        closed_distance = calibrate()
+        hours = TIME_MODES[mode_index]
+        arm_end_time = monotonic() + hours * 3600
         door_open = False
         armed = True
-        log_event("Alarm ARMED")
+        log_event(f"Alarm ARMED for {hours} hour(s)")
 
 # Main program
 
 print("UNIVERSAL DOOR ALARM")
-print("Press the button to ARM or DISARM")
+print("Button 1 (GPIO 27): ARM or DISARM")
+print("Button 2 (GPIO 24): change time mode")
+print(f"Time mode: {TIME_MODES[mode_index]} hour(s)")
 print("System currently DISARMED")
 
 try:
     while True:
 
-        # Check push button
+        # Check arm/disarm button
 
         button_state = button.is_pressed
 
@@ -98,39 +133,42 @@ try:
 
         last_button_state = button_state
 
-        # Check sensors when armed
+        # Check mode button
+
+        mode_state = mode_button.is_pressed
+
+        if mode_state and not last_mode_state:
+            next_mode()
+
+        last_mode_state = mode_state
+
+        # Check sensor when armed
 
         if armed:
-            distance = get_distance()
-            current_tilt = tilt.is_pressed
 
-            distance_changed = (
-                abs(distance - closed_distance) > TOLERANCE
-            )
-
-            tilt_changed = (
-                current_tilt != normal_tilt
-            )
-
-            if distance_changed or tilt_changed:
-                buzzer.on()
-
-                if not door_open:
-                    door_open = True
-                    log_event("DOOR OPEN - ALARM ON")
-
-                    if distance_changed:
-                        log_event("Ultrasonic sensor triggered")
-
-                    if tilt_changed:
-                        log_event("Tilt sensor triggered")
+            # Time's up - turn the alarm off
+            if monotonic() >= arm_end_time:
+                disarm("Time finished - alarm DISARMED")
 
             else:
-                buzzer.off()
+                distance = get_distance()
 
-                if door_open:
-                    door_open = False
-                    log_event("DOOR CLOSED - ALARM OFF")
+                distance_changed = (
+                    abs(distance - closed_distance) > TOLERANCE
+                )
+
+                if distance_changed:
+                    buzzer.on()
+
+                    if not door_open:
+                        door_open = True
+                        log_event("DOOR OPEN - ALARM ON")
+
+                else:
+                    buzzer.off()
+                    if door_open:
+                        door_open = False
+                        log_event("DOOR CLOSED - ALARM OFF")
 
         else:
             buzzer.off()
@@ -143,6 +181,6 @@ except KeyboardInterrupt:
 finally:
     buzzer.off()
     ultrasonic.close()
-    tilt.close()
     button.close()
+    mode_button.close()
     buzzer.close()
