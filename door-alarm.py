@@ -1,4 +1,4 @@
-from gpiozero import DistanceSensor, Button, Buzzer
+from gpiozero import DistanceSensor, Button, Buzzer, OutputDevice
 from time import sleep, monotonic
 from datetime import datetime
 from statistics import median
@@ -14,12 +14,16 @@ ultrasonic = DistanceSensor(
 button = Button(27, pull_up=True, bounce_time=0.1)       # ARM / DISARM
 mode_button = Button(24, pull_up=True, bounce_time=0.1)  # change time mode
 buzzer = Buzzer(22)
+vibrator = OutputDevice(25)
 
 
 # Alarm settings
 
 TOLERANCE = 5
 CHECK_INTERVAL = 0.1
+
+VIBRATE_ON_MODE_CHANGE = True  # False = don't vibrate when changing modes
+VIBRATE_TIME = 0.3             # seconds the vibrator buzzes
 
 TIME_MODES = [1, 5, 10, 15]   # hours the alarm stays armed
 mode_index = 0                # starts on 1 hour
@@ -86,6 +90,13 @@ def next_mode():
     mode_index = (mode_index + 1) % len(TIME_MODES)
     hours = TIME_MODES[mode_index]
     print(f"\nTime mode: {hours} hour(s)")
+
+    # Short vibration to confirm the button press
+    if VIBRATE_ON_MODE_CHANGE:
+        vibrator.on()
+        sleep(VIBRATE_TIME)
+        vibrator.off()
+
     beep(mode_index + 1)   # 1 beep = 1h, 2 = 5h, 3 = 10h, 4 = 15h
 
 # Arm and disarm alarm
@@ -180,6 +191,8 @@ except KeyboardInterrupt:
 
 finally:
     buzzer.off()
+    vibrator.off()
+    vibrator.close()
     ultrasonic.close()
     button.close()
     mode_button.close()
