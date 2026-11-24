@@ -5,13 +5,17 @@ from statistics import median
 
 # ===== SETTINGS (change these if something acts backwards) =====
 
-# If the buzzer is LOUD when it should be quiet, change True to False
-BUZZER_ACTIVE_HIGH = True
+# Your buzzer and vibrator are the "reverse" kind (they turn ON when
+# the pin is LOW), so these are set to False.
+BUZZER_ACTIVE_HIGH = False
+VIBRATOR_ACTIVE_HIGH = False
 
 # If the ON/OFF switch works backwards, change True to False
 SWITCH_ON_WHEN_PRESSED = True
 
-# Vibrate when you press the time button (False = no vibration)
+# Vibrate when you press the time button.
+# OFF for now: the vibrator pulls too much power and reboots the Pi.
+# Only change to True after the vibrator is wired through a transistor.
 VIBRATE_ON_MODE_CHANGE = True
 VIBRATE_TIME = 0.3
 
@@ -27,7 +31,7 @@ ultrasonic = DistanceSensor(echo=18, trigger=17, max_distance=2)
 power_switch = Button(27, pull_up=True, bounce_time=0.1)  # ON / OFF
 mode_button = Button(24, pull_up=True, bounce_time=0.1)   # pick time
 buzzer = Buzzer(22, active_high=BUZZER_ACTIVE_HIGH, initial_value=False)
-vibrator = OutputDevice(25, initial_value=False)
+vibrator = OutputDevice(25, active_high=VIBRATOR_ACTIVE_HIGH, initial_value=False)
 
 # ===== State =====
 
@@ -123,61 +127,68 @@ everything_off()
 
 try:
     while True:
+        try:
 
-        # ---- ON/OFF switch ----
-        if switch_is_on() and not system_on:
-            system_on = True
-            log_event("System ON - press the time button to pick a time")
+            # ---- ON/OFF switch ----
+            if switch_is_on() and not system_on:
+                system_on = True
+                log_event("System ON - press the time button to pick a time")
 
-        elif not switch_is_on() and system_on:
-            system_on = False
-            everything_off()
-            log_event("System OFF")
+            elif not switch_is_on() and system_on:
+                system_on = False
+                everything_off()
+                log_event("System OFF")
 
-        if not system_on:
+            if not system_on:
+                buzzer.off()
+                vibrator.off()
+                last_mode_state = mode_button.is_pressed
+                sleep(CHECK_INTERVAL)
+                continue
+
+            # ---- Time button ----
+            mode_state = mode_button.is_pressed
+            if mode_state and not last_mode_state:
+                pick_next_time()
+            last_mode_state = mode_state
+
+            # ---- Arm a few seconds after the last time-button press ----
+            if (not armed and last_mode_press is not None
+                    and monotonic() - last_mode_press >= ARM_DELAY):
+                arm()
+
+            # ---- Watch the door while armed ----
+            if armed:
+                if monotonic() >= arm_end_time:
+                    armed = False
+                    door_open = False
+                    mode_index = -1
+                    buzzer.off()
+                    log_event("Time finished - press the time button to start again")
+
+                else:
+                    distance = get_distance()
+
+                    if abs(distance - closed_distance) > TOLERANCE:
+                        buzzer.on()
+                        if not door_open:
+                            door_open = True
+                            log_event("DOOR OPEN - ALARM ON")
+                    else:
+                        buzzer.off()
+                        if door_open:
+                            door_open = False
+                            log_event("DOOR CLOSED - ALARM OFF")
+            else:
+                buzzer.off()
+
+            sleep(CHECK_INTERVAL)
+        except Exception as error:
+            # Never crash: keep everything quiet and show the error
             buzzer.off()
             vibrator.off()
-            last_mode_state = mode_button.is_pressed
-            sleep(CHECK_INTERVAL)
-            continue
-
-        # ---- Time button ----
-        mode_state = mode_button.is_pressed
-        if mode_state and not last_mode_state:
-            pick_next_time()
-        last_mode_state = mode_state
-
-        # ---- Arm a few seconds after the last time-button press ----
-        if (not armed and last_mode_press is not None
-                and monotonic() - last_mode_press >= ARM_DELAY):
-            arm()
-
-        # ---- Watch the door while armed ----
-        if armed:
-            if monotonic() >= arm_end_time:
-                armed = False
-                door_open = False
-                mode_index = -1
-                buzzer.off()
-                log_event("Time finished - press the time button to start again")
-
-            else:
-                distance = get_distance()
-
-                if abs(distance - closed_distance) > TOLERANCE:
-                    buzzer.on()
-                    if not door_open:
-                        door_open = True
-                        log_event("DOOR OPEN - ALARM ON")
-                else:
-                    buzzer.off()
-                    if door_open:
-                        door_open = False
-                        log_event("DOOR CLOSED - ALARM OFF")
-        else:
-            buzzer.off()
-
-        sleep(CHECK_INTERVAL)
+            log_event(f"ERROR (program kept running): {error}")
+            sleep(1)
 
 except KeyboardInterrupt:
     print("\nProgram stopped")
