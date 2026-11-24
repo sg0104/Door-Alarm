@@ -3,50 +3,51 @@ from time import sleep, monotonic
 from datetime import datetime
 from statistics import median
 
-# Component setup
+# ===== SETTINGS (change these if something acts backwards) =====
 
-ultrasonic = DistanceSensor(
-    echo=18,
-    trigger=17,
-    max_distance=2
-)
+# If the buzzer is LOUD when it should be quiet, change True to False
+BUZZER_ACTIVE_HIGH = True
 
-button = Button(27, pull_up=True, bounce_time=0.1)       # ARM / DISARM
-mode_button = Button(24, pull_up=True, bounce_time=0.1)  # change time mode
-buzzer = Buzzer(22)
-vibrator = OutputDevice(25)
+# If the ON/OFF switch works backwards, change True to False
+SWITCH_ON_WHEN_PRESSED = True
 
+# Vibrate when you press the time button (False = no vibration)
+VIBRATE_ON_MODE_CHANGE = True
+VIBRATE_TIME = 0.3
 
-# Alarm settings
-
-TOLERANCE = 5
+TOLERANCE = 5                # cm the object must move to set off the alarm
+TIME_MODES = [1, 5, 10, 15]  # hours
+ARM_DELAY = 3                # seconds after your last time-button press before it arms
 CHECK_INTERVAL = 0.1
 
-VIBRATE_ON_MODE_CHANGE = True  # False = don't vibrate when changing modes
-VIBRATE_TIME = 0.3             # seconds the vibrator buzzes
+# ===== Component setup =====
 
-TIME_MODES = [1, 5, 10, 15]   # hours the alarm stays armed
-mode_index = 0                # starts on 1 hour
+ultrasonic = DistanceSensor(echo=18, trigger=17, max_distance=2)
 
+power_switch = Button(27, pull_up=True, bounce_time=0.1)  # ON / OFF
+mode_button = Button(24, pull_up=True, bounce_time=0.1)   # pick time
+buzzer = Buzzer(22, active_high=BUZZER_ACTIVE_HIGH, initial_value=False)
+vibrator = OutputDevice(25, initial_value=False)
+
+# ===== State =====
+
+system_on = False
+mode_index = -1           # -1 = no time picked yet
+last_mode_press = None    # when the time button was last pressed
 armed = False
 door_open = False
 closed_distance = None
 arm_end_time = None
-last_button_state = False
 last_mode_state = False
 
-# Record events
+# ===== Helpers =====
 
 def log_event(message):
     timestamp = datetime.now().strftime("%H:%M:%S")
     entry = f"[{timestamp}] {message}"
-
     print("\n" + entry)
-
     with open("alarm_log.txt", "a") as file:
         file.write(entry + "\n")
-
-# Short beeps (so you can hear the mode without a screen)
 
 def beep(times):
     for i in range(times):
@@ -55,43 +56,46 @@ def beep(times):
         buzzer.off()
         sleep(0.15)
 
-# Read ultrasonic sensor
-
 def get_distance():
     return ultrasonic.distance * 100
 
-# Calibrate sensor
-
 def calibrate():
-    print("\nCalibrating sensor...")
-    print("Keep the door closed and still.")
-
+    print("\nCalibrating sensor... keep the door closed and still.")
     readings = []
-
     for i in range(10):
         readings.append(get_distance())
         sleep(0.1)
+    baseline = median(readings)
+    print(f"Closed distance: {baseline:.1f} cm")
+    return baseline
 
-    baseline_distance = median(readings)
+def switch_is_on():
+    if SWITCH_ON_WHEN_PRESSED:
+        return power_switch.is_pressed
+    return not power_switch.is_pressed
 
-    print(f"Closed distance: {baseline_distance:.1f} cm")
+def everything_off():
+    global armed, door_open, mode_index, last_mode_press
+    armed = False
+    door_open = False
+    mode_index = -1
+    last_mode_press = None
+    buzzer.off()
+    vibrator.off()
 
-    return baseline_distance
+def pick_next_time():
+    global mode_index, last_mode_press, armed, door_open
 
-# Change time mode
-
-def next_mode():
-    global mode_index
-
-    if armed:
-        print("\nDisarm first to change the time mode")
-        return
+    # Picking a new time cancels the current countdown until it re-arms
+    armed = False
+    door_open = False
+    buzzer.off()
 
     mode_index = (mode_index + 1) % len(TIME_MODES)
-    hours = TIME_MODES[mode_index]
-    print(f"\nTime mode: {hours} hour(s)")
+    last_mode_press = monotonic()
+    print(f"\nTime picked: {TIME_MODES[mode_index]} hour(s) "
+          f"(arms in {ARM_DELAY} seconds)")
 
-    # Short vibration to confirm the button press
     if VIBRATE_ON_MODE_CHANGE:
         vibrator.on()
         sleep(VIBRATE_TIME)
@@ -99,88 +103,77 @@ def next_mode():
 
     beep(mode_index + 1)   # 1 beep = 1h, 2 = 5h, 3 = 10h, 4 = 15h
 
-# Arm and disarm alarm
-
-def disarm(reason="Alarm DISARMED"):
-    global armed, door_open
-
-    armed = False
+def arm():
+    global armed, door_open, closed_distance, arm_end_time, last_mode_press
+    closed_distance = calibrate()
+    hours = TIME_MODES[mode_index]
+    arm_end_time = monotonic() + hours * 3600
     door_open = False
-    buzzer.off()
-    log_event(reason)
+    armed = True
+    last_mode_press = None
+    log_event(f"Alarm ARMED for {hours} hour(s)")
 
-def toggle_alarm():
-    global armed, door_open
-    global closed_distance, arm_end_time
-
-    if armed:
-        disarm()
-
-    else:
-        closed_distance = calibrate()
-        hours = TIME_MODES[mode_index]
-        arm_end_time = monotonic() + hours * 3600
-        door_open = False
-        armed = True
-        log_event(f"Alarm ARMED for {hours} hour(s)")
-
-# Main program
+# ===== Main program =====
 
 print("UNIVERSAL DOOR ALARM")
-print("Button 1 (GPIO 27): ARM or DISARM")
-print("Button 2 (GPIO 24): change time mode")
-print(f"Time mode: {TIME_MODES[mode_index]} hour(s)")
-print("System currently DISARMED")
+print("Switch (GPIO 27): ON / OFF")
+print("Time button (GPIO 24): pick 1, 5, 10 or 15 hours")
+
+everything_off()
 
 try:
     while True:
 
-        # Check arm/disarm button
+        # ---- ON/OFF switch ----
+        if switch_is_on() and not system_on:
+            system_on = True
+            log_event("System ON - press the time button to pick a time")
 
-        button_state = button.is_pressed
+        elif not switch_is_on() and system_on:
+            system_on = False
+            everything_off()
+            log_event("System OFF")
 
-        if button_state and not last_button_state:
-            toggle_alarm()
+        if not system_on:
+            buzzer.off()
+            vibrator.off()
+            last_mode_state = mode_button.is_pressed
+            sleep(CHECK_INTERVAL)
+            continue
 
-        last_button_state = button_state
-
-        # Check mode button
-
+        # ---- Time button ----
         mode_state = mode_button.is_pressed
-
         if mode_state and not last_mode_state:
-            next_mode()
-
+            pick_next_time()
         last_mode_state = mode_state
 
-        # Check sensor when armed
+        # ---- Arm a few seconds after the last time-button press ----
+        if (not armed and last_mode_press is not None
+                and monotonic() - last_mode_press >= ARM_DELAY):
+            arm()
 
+        # ---- Watch the door while armed ----
         if armed:
-
-            # Time's up - turn the alarm off
             if monotonic() >= arm_end_time:
-                disarm("Time finished - alarm DISARMED")
+                armed = False
+                door_open = False
+                mode_index = -1
+                buzzer.off()
+                log_event("Time finished - press the time button to start again")
 
             else:
                 distance = get_distance()
 
-                distance_changed = (
-                    abs(distance - closed_distance) > TOLERANCE
-                )
-
-                if distance_changed:
+                if abs(distance - closed_distance) > TOLERANCE:
                     buzzer.on()
-
                     if not door_open:
                         door_open = True
                         log_event("DOOR OPEN - ALARM ON")
-
                 else:
                     buzzer.off()
                     if door_open:
                         door_open = False
                         log_event("DOOR CLOSED - ALARM OFF")
-
         else:
             buzzer.off()
 
@@ -192,8 +185,8 @@ except KeyboardInterrupt:
 finally:
     buzzer.off()
     vibrator.off()
-    vibrator.close()
     ultrasonic.close()
-    button.close()
+    power_switch.close()
     mode_button.close()
     buzzer.close()
+    vibrator.close()
