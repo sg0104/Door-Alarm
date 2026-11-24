@@ -81,17 +81,15 @@ def calibrate():
 # Change time mode
 
 def next_mode():
-    global mode_index, arm_end_time
+    global mode_index
+
+    if armed:
+        print("\nDisarm first to change the time mode")
+        return
 
     mode_index = (mode_index + 1) % len(TIME_MODES)
     hours = TIME_MODES[mode_index]
-
-    if armed:
-        # Restart the timer with the new time
-        arm_end_time = monotonic() + hours * 3600
-        log_event(f"Time mode changed: alarm now on for {hours} hour(s) from now")
-    else:
-        print(f"\nTime mode: {hours} hour(s)")
+    print(f"\nTime mode: {hours} hour(s)")
 
     # Short vibration to confirm the button press
     if VIBRATE_ON_MODE_CHANGE:
@@ -133,20 +131,6 @@ print("Button 1 (GPIO 27): ARM or DISARM")
 print("Button 2 (GPIO 24): change time mode")
 print(f"Time mode: {TIME_MODES[mode_index]} hour(s)")
 print("System currently DISARMED")
-
-# Wiring check: neither button should read as pressed at startup
-if button.is_pressed:
-    print("\nWARNING: Button 1 (GPIO 27) reads as PRESSED without touching it!")
-    print("Check its wiring - use DIAGONAL legs on a 4-leg button,")
-    print("one to GPIO 27 and one to GND.")
-if mode_button.is_pressed:
-    print("\nWARNING: Button 2 (GPIO 24) reads as PRESSED without touching it!")
-    print("Check its wiring - use DIAGONAL legs on a 4-leg button,")
-    print("one to GPIO 24 and one to GND.")
-
-# Start with the real button states so nothing triggers by itself
-last_button_state = button.is_pressed
-last_mode_state = mode_button.is_pressed
 
 try:
     while True:
